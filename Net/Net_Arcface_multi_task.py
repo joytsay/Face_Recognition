@@ -4,41 +4,40 @@ from Net.Loss import triplet_loss as triplet
 from Net.Loss import face_losses as L_layer
 #from tensorflow.contrib.slim import nets
 from Net.Resnet_50 import resnet_v1
+#from Net.Resnet_50 import resnet_v2
 slim = tf.contrib.slim
 import scipy.stats
 import math
 import os
 
-
-
 class Res50_Arc_loss(object):
-    def __init__(self,train_batch_data,ToTal_IDs, graph):
+    def __init__(self,hyper_para,ToTal_IDs, graph):
         super(Res50_Arc_loss, self).__init__()
         self.session = None
         self._config = tf.ConfigProto()
-        self._channels = train_batch_data["img"].shape[-1]
-        self._share_layers_training = True
-        self._weight_decay_share = 0.0005
+        self._channels = 3
+        self._share_layers_training = hyper_para["is_share_layers_training"]
+        self._weight_decay_share = hyper_para["weight_decay_share"] #0.0015
         self._graph = graph
-        self._crop_height = train_batch_data["img"].shape[1]
-        self._crop_width = train_batch_data["img"].shape[2]
-        self._FR_Emb_Dim = 512
-        self._Gender_hinden_output = [512]
+        self._crop_height = hyper_para["imgage_width"]
+        self._crop_width = hyper_para["imgage_width"]
+        self._FR_Emb_Dim = hyper_para["FR_Emb_Dim"]
+        self._Gender_hinden_output = hyper_para["Gender_hinden_layers_dims"]
         self._Gender_class = 2
-        self._Age_hinden_output = [512,512]
+        self._Age_hinden_output = hyper_para["Age_hinden_layers_dims"]
         self._Age_Class = 7
 		
         self._task = ["FR","Gender","Age"]
-        self._weight_decay = {self._task[0]:0.0005, self._task[1]:0.0005, self._task[2]:0.0005}
+        self._weight_decay = {self._task[0]:hyper_para["weight_decay"][0], self._task[1]:hyper_para["weight_decay"][1], self._task[2]:hyper_para["weight_decay"][2]}
         self._l2_norm = True
-        self._initial_lr_FR = 1e-3 #initial learning rate
-        self._initial_lr_Gender = 1e-3 #initial learning rate
-        self._initial_lr_Age = 1e-3 #initial learning rate
+        self._initial_lr_FR = hyper_para["initial_lr"][0] #initial learning rate
+        self._initial_lr_Gender = hyper_para["initial_lr"][1] #initial learning rate
+        self._initial_lr_Age = hyper_para["initial_lr"][2] #initial learning rate
         self._lr_shrink_rate = 0.1
         self._ToTal_IDs = ToTal_IDs
-        self._step_without_progress_thresh = 15000
+        self._step_without_progress_thresh = hyper_para["step_without_progress_thresh"]
         self._loss_slop_check_budget = {}
-        self._privious_loss_dump_amount = 5000
+        self._privious_loss_dump_amount = self._step_without_progress_thresh / 6
         self._loss_container = {}
         self._save_loss = {}
         self._steps_without_progress = {}
@@ -54,7 +53,7 @@ class Res50_Arc_loss(object):
 
         with self._graph.as_default():
             self._is_training = tf.placeholder(name="is_training",shape = (), dtype=tf.bool)
-            self._imgs = tf.placeholder(name="input_imgs", shape=[None]+list(train_batch_data["img"].shape[1:]), dtype=tf.float32)
+            self._imgs = tf.placeholder(name="input_imgs", shape=[None,self._crop_height,self._crop_width,self._channels], dtype=tf.float32)
             self._labels = {}
             self._labels[self._task[0]] = tf.placeholder(name="input_labels", shape=[None], dtype=tf.int32)
             self._labels[self._task[1]] = tf.placeholder(name="input_labels", shape=[None,self._Gender_class], dtype=tf.float32)
@@ -96,6 +95,8 @@ class Res50_Arc_loss(object):
             
             #FR
             self._FR_embedding  = self._model_fn_FR    (self._share_output, self._weight_decay[self._task[0]], self._l2_norm, self._is_training)
+            #self._FR_embedding = self._model_fn_FR    (self._share_output, 0.0, self._l2_norm, False)
+            #self._FR_embedding = tf.stop_gradient(self._FR_embedding)
             w_init_method = tf.contrib.layers.xavier_initializer(uniform=False)
             self._FR_logit = L_layer.arcface_loss(self._FR_embedding, self._labels[self._task[0]], self._ToTal_IDs, w_init_method)
             self._softmax_op[self._task[0]] = None
@@ -185,12 +186,10 @@ class Res50_Arc_loss(object):
         with tf.name_scope('data_augmentation'):    
             distorted_image = tf.cast(input_tensors, tf.float32)
             distorted_image = tf.map_fn(lambda img: tf.image.random_flip_left_right(img), distorted_image)
-            #distorted_image = tf.map_fn(lambda img: tf.image.random_brightness(img,max_delta=35), distorted_image)
-            #distorted_image = tf.map_fn(lambda img: tf.image.random_contrast(img,lower=0.2, upper=1.8), distorted_image)
-            distorted_image = tf.image.random_brightness(distorted_image,max_delta=35)
-            distorted_image = tf.image.random_contrast(distorted_image,lower=0.2, upper=1.8)
-            distorted_image = tf.maximum(distorted_image, 0.0)
-            distorted_image = tf.minimum(distorted_image, 255.0)
+            #distorted_image = tf.image.random_brightness(distorted_image,max_delta=35)
+            #distorted_image = tf.image.random_contrast(distorted_image,lower=0.2, upper=1.8)
+            #distorted_image = tf.maximum(distorted_image, 0.0)
+            #distorted_image = tf.minimum(distorted_image, 255.0)
 
         return (distorted_image - 255.0/2) / (255.0/2)
 
@@ -203,11 +202,11 @@ class Res50_Arc_loss(object):
                          lambda: self.Preprocess_test (input_tensors))
         
         return images
-
+        #return self.Preprocess_test (input_tensors)
 		
     def _model_fn_share(self,input_batch,weight_decay,is_training = False,num_classes = None):
-        #with slim.arg_scope(nets.resnet_v2.resnet_arg_scope(weight_decay = weight_decay)):
-        #    net, endpoints = nets.resnet_v2.resnet_v2_50(input_batch, num_classes=None
+        #with slim.arg_scope(resnet_v2.resnet_arg_scope(weight_decay = weight_decay)):
+        #    net, endpoints = resnet_v2.resnet_v2_50(input_batch, num_classes=None
         #                                                 ,is_training=is_training,reuse = tf.AUTO_REUSE)
 														 
         with slim.arg_scope(resnet_v1.resnet_arg_scope(weight_decay = weight_decay)):
@@ -233,38 +232,57 @@ class Res50_Arc_loss(object):
         net = tf.layers.dropout(net, rate = 0.5,training = is_training, name = "drop_out")
         count = 0
         for dim in self._Gender_hinden_output:
-            with tf.variable_scope("fc_Gender_"+str(count), reuse=tf.AUTO_REUSE) as scope:
+            #with tf.variable_scope("fc_Gender_"+str(count), reuse=tf.AUTO_REUSE) as scope:
+            #    net = slim.fully_connected(net, num_outputs=dim
+            #                              ,weights_regularizer = slim.l2_regularizer(weight_decay)
+            #                              ,normalizer_fn=tf.layers.batch_normalization
+			#							  ,normalizer_params={'training':is_training}
+			#							  ,scope=scope)
+			
+            with tf.variable_scope("fc_Gender"+str(count), reuse=tf.AUTO_REUSE) as scope:
                 net = slim.fully_connected(net, num_outputs=dim
                                           ,weights_regularizer = slim.l2_regularizer(weight_decay)
-                                          ,normalizer_fn=tf.layers.batch_normalization
-										  ,normalizer_params={'training':is_training}
+                                          ,normalizer_fn=None
+                                          ,activation_fn=None
 										  ,scope=scope)
+										  
+                net = tf.contrib.layers.batch_norm(net, is_training=is_training, activation_fn = tf.nn.relu, scope='postnorm')
             count += 1
-            print("gender_net ",net.shape)
+            #print("gender_net ",net.shape)
         with tf.variable_scope("fc_Gender_"+str(count), reuse=tf.AUTO_REUSE) as scope:
             output = slim.fully_connected(net, num_outputs=self._Gender_class
                                          ,weights_regularizer = slim.l2_regularizer(weight_decay)
                                          ,activation_fn=None, scope=scope)
-        print("gender_output_net ",output.shape)
+        #print("gender_output_net ",output.shape)
         return output
     
     def _model_fn_Age(self,net,weight_decay,is_training = False):
         net = tf.layers.dropout(net, rate = 0.5,training = is_training, name = "drop_out")
         count = 0
         for dim in self._Age_hinden_output:
+            #with tf.variable_scope("fc_Age_"+str(count), reuse=tf.AUTO_REUSE) as scope:
+            #    net = slim.fully_connected(net, num_outputs=dim
+            #                              ,weights_regularizer = slim.l2_regularizer(weight_decay)
+			#							  ,normalizer_fn=tf.layers.batch_normalization
+			#							  ,normalizer_params={'training':is_training}
+            #                              , scope=scope)
+			
             with tf.variable_scope("fc_Age_"+str(count), reuse=tf.AUTO_REUSE) as scope:
                 net = slim.fully_connected(net, num_outputs=dim
                                           ,weights_regularizer = slim.l2_regularizer(weight_decay)
-										  ,normalizer_fn=tf.layers.batch_normalization
-										  ,normalizer_params={'training':is_training}
+										  ,normalizer_fn=None
+                                          ,activation_fn=None
                                           , scope=scope)
+                #net = tf.layers.batch_normalization(net, training=is_training, activation_fn = tf.nn.relu, name='postnorm')
+                net = tf.contrib.layers.batch_norm(net, is_training=is_training, activation_fn = tf.nn.relu, scope='postnorm')
+
                 count += 1
-                print("Age_net ",net.shape)
+                #print("Age_net ",net.shape)
         with tf.variable_scope("fc_Age_"+str(count), reuse=tf.AUTO_REUSE) as scope:
             output = slim.fully_connected(net, num_outputs=self._Age_Class
                                          ,weights_regularizer = slim.l2_regularizer(weight_decay)
                                          ,activation_fn=None, scope=scope)
-            print("Age_output_net ",output.shape)
+            #print("Age_output_net ",output.shape)
         return output
 
     def Same_person_eval(self, labels, pairwise_dist):
@@ -402,7 +420,6 @@ class Res50_Arc_loss(object):
 									 or var.name.startswith('lr') or var.name.find('embedding_weights') >= 0 )]
             
             saver_ckpt = tf.train.Saver(pre_trained_variables)
-            #saver_ckpt.restore(self.session,"Model/resnet_v1_50.ckpt") 
             saver_ckpt.restore(self.session,ckpt_path) 
     
     def freeze_deploy_graph(self,model_path):

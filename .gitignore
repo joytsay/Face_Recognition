@@ -1,2 +1,4 @@
-Model/09-02_02-45.pb
-Model/gvFR.tflite
+Model/
+training/
+*.pyc
+loss_debug/
